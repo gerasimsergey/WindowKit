@@ -255,8 +255,7 @@ public final class WindowKit {
 
     private func invalidateAppState(forWindowID id: CGWindowID) {
         if let window = tracker.repository.readCache(windowID: id) {
-            refreshBadge(forPID: window.ownerPID)
-            appStates[window.ownerPID]?.invalidate()
+            invalidateAppState(forPID: window.ownerPID)
         } else {
             for state in appStates.values {
                 state.invalidate()
@@ -264,35 +263,7 @@ public final class WindowKit {
         }
     }
 
-    // MARK: - Dock Badge
-
     private func refreshBadge(forPID pid: pid_t) {
-        guard let app = NSRunningApplication(processIdentifier: pid),
-              let appName = app.localizedName else { return }
-
-        guard let dockPID = NSWorkspace.shared.runningApplications
-            .first(where: { $0.bundleIdentifier == "com.apple.dock" })?
-            .processIdentifier else { return }
-
-        let dockApp = AXUIElement.application(pid: dockPID)
-        guard let children = try? dockApp.children(),
-              let list = children.first(where: { (try? $0.role()) == kAXListRole as String }),
-              let dockItems = try? list.children() else { return }
-
-        for item in dockItems {
-            guard let subrole = try? item.subrole(),
-                  subrole == "AXApplicationDockItem",
-                  let title = try? item.title(),
-                  title == appName else { continue }
-
-            if let statusLabel = try? item.attribute("AXStatusLabel", as: String.self) {
-                badgeStore.setBadge(statusLabel, forPID: pid)
-            } else {
-                badgeStore.removeBadge(forPID: pid)
-            }
-            return
-        }
-
-        badgeStore.removeBadge(forPID: pid)
+        badgeStore.refresh(forPID: pid)
     }
 }
