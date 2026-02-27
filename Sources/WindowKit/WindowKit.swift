@@ -8,6 +8,7 @@ import SwiftUI
 public final class AppWindowState {
     public let pid: pid_t
     private let repository: WindowRepository
+    private let badgeStore: DockBadgeStore
 
     // Only tracked stored property — bumped to trigger re-evaluation
     private var version: UInt = 0
@@ -55,12 +56,25 @@ public final class AppWindowState {
         }.count
     }
 
+    // -- Dock badge --
+
+    public var badgeLabel: String? {
+        _ = version
+        return badgeStore.badge(forPID: pid)
+    }
+
+    public var hasBadge: Bool {
+        _ = version
+        return badgeStore.badge(forPID: pid) != nil
+    }
+
     /// Animation applied when state changes. Set to `nil` to disable.
     @ObservationIgnored public var animation: Animation? = .default
 
-    init(pid: pid_t, repository: WindowRepository) {
+    init(pid: pid_t, repository: WindowRepository, badgeStore: DockBadgeStore) {
         self.pid = pid
         self.repository = repository
+        self.badgeStore = badgeStore
     }
 
     func invalidate() {
@@ -127,6 +141,7 @@ public final class WindowKit {
     }
 
     private let tracker: WindowTracker
+    private let badgeStore = DockBadgeStore()
     private var cancellables = Set<AnyCancellable>()
     @ObservationIgnored private var appStates: [pid_t: AppWindowState] = [:]
 
@@ -147,6 +162,7 @@ public final class WindowKit {
                 case .applicationTerminated(let pid):
                     self.launchingApplications.removeAll { $0.processIdentifier == pid }
                     self.trackedApplications.removeAll { $0.processIdentifier == pid }
+                    self.badgeStore.removeBadge(forPID: pid)
                     self.appStates[pid]?.invalidate()
 
                 case .applicationActivated:
@@ -223,7 +239,7 @@ public final class WindowKit {
 
     public func windowState(for pid: pid_t) -> AppWindowState {
         if let existing = appStates[pid] { return existing }
-        let state = AppWindowState(pid: pid, repository: tracker.repository)
+        let state = AppWindowState(pid: pid, repository: tracker.repository, badgeStore: badgeStore)
         appStates[pid] = state
         return state
     }
@@ -233,17 +249,50 @@ public final class WindowKit {
     }
 
     private func invalidateAppState(forPID pid: pid_t) {
+        refreshBadge(forPID: pid)
         appStates[pid]?.invalidate()
     }
 
     private func invalidateAppState(forWindowID id: CGWindowID) {
         if let window = tracker.repository.readCache(windowID: id) {
+            refreshBadge(forPID: window.ownerPID)
             appStates[window.ownerPID]?.invalidate()
         } else {
-            // Window already removed from repository — invalidate all existing states
             for state in appStates.values {
                 state.invalidate()
             }
         }
+    }
+
+    // MARK: - Dock Badge
+
+    private func refreshBadge(forPID pid: pid_t) {
+        guard let app = NSRunningApplication(processIdentifier: pid),
+              let appName = app.localizedName else { return }
+
+        guard let dockPID = NSWorkspace.shared.runningApplications
+            .first(where: { $0.bundleIdentifier == "com.apple.dock" })?
+            .processIdentifier else { return }
+
+        let dockApp = AXUIElement.application(pid: dockPID)
+        guard let children = try? dockApp.children(),
+              let list = children.first(where: { (try? $0.role()) == kAXListRole as String }),
+              let dockItems = try? list.children() else { return }
+
+        for item in dockItems {
+            guard let subrole = try? item.subrole(),
+                  subrole == "AXApplicationDockItem",
+                  let title = try? item.title(),
+                  title == appName else { continue }
+
+            if let statusLabel = try? item.attribute("AXStatusLabel", as: String.self) {
+                badgeStore.setBadge(statusLabel, forPID: pid)
+            } else {
+                badgeStore.removeBadge(forPID: pid)
+            }
+            return
+        }
+
+        badgeStore.removeBadge(forPID: pid)
     }
 }
