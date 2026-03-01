@@ -59,6 +59,7 @@ public final class SystemPermissions: ObservableObject, @unchecked Sendable {
     public func requestAccessibility() {
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
         AXIsProcessTrustedWithOptions(options)
+        openPrivacySettings(for: .accessibility)
     }
 
     public func requestScreenRecording() {
@@ -73,6 +74,7 @@ public final class SystemPermissions: ObservableObject, @unchecked Sendable {
             properties: nil, queue: .main,
             handler: { _, _, _, _ in }
         )
+        openPrivacySettings(for: .screenRecording)
     }
 
     public func openPrivacySettings(for permission: PermissionType) {
