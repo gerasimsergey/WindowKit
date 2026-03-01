@@ -167,6 +167,9 @@ public final class WindowKit {
 
                 case .applicationActivated:
                     self.frontmostApplication = self.tracker.frontmostApplication
+                    if let pid = self.frontmostApplication?.processIdentifier {
+                        self.refreshBadge(forPID: pid)
+                    }
 
                 case .spaceChanged:
                     break
