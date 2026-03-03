@@ -1,5 +1,6 @@
 import Cocoa
 import Combine
+import os
 
 public final class WindowTracker {
     static let eventDebounceInterval: TimeInterval = 0.3
@@ -25,9 +26,8 @@ public final class WindowTracker {
     public var processEvents: AnyPublisher<ProcessEvent, Never> { processWatcher.events }
     public var frontmostApplication: NSRunningApplication? { processWatcher.frontmostApplication }
 
-    private var debouncedTasks: [String: Task<Void, Never>] = [:]
-    private let debounceLock = NSLock()
-    private var pendingDestroyPIDs = Set<pid_t>()
+    private let debouncedTasks = OSAllocatedUnfairLock(initialState: [String: Task<Void, Never>]())
+    private let pendingDestroyPIDs = OSAllocatedUnfairLock(initialState: Set<pid_t>())
     private var isTracking = false
 
     public init() {
@@ -84,10 +84,11 @@ public final class WindowTracker {
         watcherManager?.unwatchAll()
         watcherManager = nil
 
-        debounceLock.lock()
-        let tasks = debouncedTasks
-        debouncedTasks.removeAll()
-        debounceLock.unlock()
+        let tasks = debouncedTasks.withLockUnchecked { tasks -> [String: Task<Void, Never>] in
+            let snapshot = tasks
+            tasks.removeAll()
+            return snapshot
+        }
 
         for (_, task) in tasks {
             task.cancel()
@@ -198,15 +199,14 @@ public final class WindowTracker {
             }
 
         case .windowDestroyed:
-            debounceLock.lock()
-            pendingDestroyPIDs.insert(pid)
-            debounceLock.unlock()
+            pendingDestroyPIDs.withLockUnchecked { _ = $0.insert(pid) }
             debounce(key: "window-destroyed") { [weak self] in
                 guard let self else { return }
-                debounceLock.lock()
-                let pids = pendingDestroyPIDs
-                pendingDestroyPIDs.removeAll()
-                debounceLock.unlock()
+                let pids = pendingDestroyPIDs.withLockUnchecked { pids -> Set<pid_t> in
+                    let snapshot = pids
+                    pids.removeAll()
+                    return snapshot
+                }
                 for pid in pids {
                     guard let app = NSRunningApplication(processIdentifier: pid) else { continue }
                     Logger.debug("Window destroyed notification, validating all windows", details: "pid=\(pid)")
@@ -424,18 +424,18 @@ public final class WindowTracker {
     }
 
     private func debounce(key: String, operation: @escaping () async -> Void) {
-        debounceLock.lock()
-        debouncedTasks[key]?.cancel()
-        debouncedTasks[key] = Task {
-            do {
-                try await Task.sleep(nanoseconds: UInt64(Self.eventDebounceInterval * 1_000_000_000))
-            } catch {
-                return
+        debouncedTasks.withLockUnchecked { tasks in
+            tasks[key]?.cancel()
+            tasks[key] = Task {
+                do {
+                    try await Task.sleep(nanoseconds: UInt64(Self.eventDebounceInterval * 1_000_000_000))
+                } catch {
+                    return
+                }
+                guard !Task.isCancelled else { return }
+                await operation()
             }
-            guard !Task.isCancelled else { return }
-            await operation()
         }
-        debounceLock.unlock()
     }
 
     private func emitChanges(_ changes: ChangeReport) {
