@@ -158,36 +158,39 @@ public final class WindowRepository: @unchecked Sendable {
     @discardableResult
     public func purify(forPID pid: pid_t, validator: (AXUIElement) -> Bool) -> Set<CapturedWindow> {
         cacheLock.lock()
-        let windows = entries[pid] ?? []
+        let snapshot = entries[pid] ?? []
         cacheLock.unlock()
 
-        if windows.isEmpty {
-            return []
-        }
+        if snapshot.isEmpty { return [] }
 
-        Logger.debug("Purify checking", details: "pid=\(pid), cached=\(windows.count)")
+        Logger.debug("Purify checking", details: "pid=\(pid), cached=\(snapshot.count)")
 
-        var validWindows = Set<CapturedWindow>()
-        var invalidIDs = [CGWindowID]()
-
-        for window in windows {
-            if validator(window.axElement) {
-                validWindows.insert(window)
-            } else {
-                invalidIDs.append(window.id)
+        var invalidElements = [CGWindowID: AXUIElement]()
+        for window in snapshot {
+            if !validator(window.axElement) {
+                invalidElements[window.id] = window.axElement
             }
         }
 
-        if !invalidIDs.isEmpty {
-            cacheLock.lock()
-            defer { cacheLock.unlock() }
-            Logger.debug("Purging invalid windows", details: "pid=\(pid), count=\(invalidIDs.count), ids=\(invalidIDs)")
-            for windowID in invalidIDs {
-                removeEntryInternal(pid: pid, windowID: windowID)
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+
+        if !invalidElements.isEmpty {
+            // Only remove if the current entry still has the same axElement we validated
+            var removed = [CGWindowID]()
+            for (windowID, staleElement) in invalidElements {
+                if let current = entries[pid]?.first(where: { $0.id == windowID }),
+                   current.axElement == staleElement {
+                    removeEntryInternal(pid: pid, windowID: windowID)
+                    removed.append(windowID)
+                }
+            }
+            if !removed.isEmpty {
+                Logger.debug("Purging invalid windows", details: "pid=\(pid), count=\(removed.count), ids=\(removed)")
             }
         }
 
-        return validWindows
+        return entries[pid] ?? []
     }
 
     public func storePreview(_ image: CGImage, forWindowID windowID: CGWindowID) {
