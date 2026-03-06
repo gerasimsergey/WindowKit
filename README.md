@@ -112,7 +112,7 @@ window.closeButton         // AXUIElement?
 // Currently focused application (updated before .applicationActivated events emit)
 let focused = WindowKit.shared.frontmostApplication
 
-// Applications with tracked windows (derived from window cache)
+// All running applications with regular activation policy (includes windowless apps)
 let running = WindowKit.shared.trackedApplications
 
 // Applications in the process of launching (before windows are discovered)

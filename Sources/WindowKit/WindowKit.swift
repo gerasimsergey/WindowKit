@@ -157,7 +157,7 @@ public final class WindowKit {
                     self.launchingApplications.append(app)
 
                 case .applicationLaunched:
-                    break
+                    self.trackedApplications = self.tracker.repository.trackedApplications()
 
                 case .applicationTerminated(let pid):
                     self.launchingApplications.removeAll { $0.processIdentifier == pid }

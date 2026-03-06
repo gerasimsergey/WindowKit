@@ -67,6 +67,7 @@ public final class WindowTracker {
         let apps = processWatcher.runningApplications()
         Logger.debug("Found running applications", details: "count=\(apps.count)")
         for app in apps {
+            repository.registerPID(app.processIdentifier)
             manager.watch(pid: app.processIdentifier)
         }
 
@@ -164,6 +165,7 @@ public final class WindowTracker {
             break
 
         case .applicationLaunched(let app):
+            repository.registerPID(app.processIdentifier)
             watcherManager?.watch(pid: app.processIdentifier)
             debounce(key: "refresh-\(app.processIdentifier)") { [weak self] in
                 await self?.refreshApplication(app)

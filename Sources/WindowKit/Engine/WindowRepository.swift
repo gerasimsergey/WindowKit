@@ -21,7 +21,7 @@ public final class WindowRepository: @unchecked Sendable {
 
     public func trackedApplications() -> [NSRunningApplication] {
         cacheLock.lock()
-        let pids = entries.filter { !$0.value.isEmpty }.map(\.key)
+        let pids = Set(entries.keys)
         cacheLock.unlock()
         return pids.compactMap { pid in
             guard let app = NSRunningApplication(processIdentifier: pid),
@@ -98,11 +98,7 @@ public final class WindowRepository: @unchecked Sendable {
             merged.insert(windowToInsert)
         }
 
-        if merged.isEmpty {
-            entries.removeValue(forKey: pid)
-        } else {
-            entries[pid] = merged
-        }
+        entries[pid] = merged
 
         Logger.debug("Store merge result", details: "pid=\(pid), old=\(oldWindows.count), discovered=\(windows.count), merged=\(merged.count)")
 
@@ -121,11 +117,7 @@ public final class WindowRepository: @unchecked Sendable {
         var currentWindows = entries[pid] ?? []
         let oldWindows = currentWindows
         mutation(&currentWindows)
-        if currentWindows.isEmpty {
-            entries.removeValue(forKey: pid)
-        } else {
-            entries[pid] = currentWindows
-        }
+        entries[pid] = currentWindows
         return computeChanges(old: oldWindows, new: currentWindows)
     }
 
@@ -141,6 +133,14 @@ public final class WindowRepository: @unchecked Sendable {
         cacheLock.lock()
         defer { cacheLock.unlock() }
         removeEntryInternal(pid: pid, windowID: windowID)
+    }
+
+    public func registerPID(_ pid: pid_t) {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        if entries[pid] == nil {
+            entries[pid] = []
+        }
     }
 
     public func removeAll(forPID pid: pid_t) {
@@ -280,9 +280,6 @@ public final class WindowRepository: @unchecked Sendable {
 
     private func removeEntryInternal(pid: pid_t, windowID: CGWindowID) {
         entries[pid]?.remove(where: { $0.id == windowID })
-        if entries[pid]?.isEmpty == true {
-            entries.removeValue(forKey: pid)
-        }
     }
 
     private func computeChanges(old: Set<CapturedWindow>, new: Set<CapturedWindow>) -> ChangeReport {
