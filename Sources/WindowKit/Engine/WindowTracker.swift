@@ -463,6 +463,7 @@ public final class WindowTracker {
                 guard let self else { return }
                 switch event {
                 case .windowCreated, .windowDestroyed:
+                    Logger.debug("NotificationCenter banner event", details: "\(event)")
                     debounce(key: "notification-banner") {
                         self.eventSubject.send(.notificationBannerChanged)
                     }
