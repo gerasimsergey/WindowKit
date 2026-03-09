@@ -193,6 +193,8 @@ public final class WindowKit {
                     self.invalidateAppState(forPID: window.ownerPID)
                 case .previewCaptured(let id, _):
                     self.invalidateAppState(forWindowID: id)
+                case .notificationBannerChanged:
+                    self.refreshAllBadges()
                 }
             }
             .store(in: &cancellables)
@@ -268,5 +270,13 @@ public final class WindowKit {
 
     private func refreshBadge(forPID pid: pid_t) {
         badgeStore.refresh(forPID: pid)
+    }
+
+    private func refreshAllBadges() {
+        for app in trackedApplications {
+            let pid = app.processIdentifier
+            badgeStore.refresh(forPID: pid)
+            appStates[pid]?.invalidate()
+        }
     }
 }

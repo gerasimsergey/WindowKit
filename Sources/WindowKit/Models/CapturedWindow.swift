@@ -277,4 +277,5 @@ public enum WindowEvent: Sendable {
     case windowDisappeared(CGWindowID)
     case windowChanged(CapturedWindow)
     case previewCaptured(CGWindowID, CGImage)
+    case notificationBannerChanged
 }

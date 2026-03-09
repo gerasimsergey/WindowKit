@@ -28,6 +28,7 @@ public final class WindowTracker {
 
     private let debouncedTasks = OSAllocatedUnfairLock(initialState: [String: Task<Void, Never>]())
     private let pendingDestroyPIDs = OSAllocatedUnfairLock(initialState: Set<pid_t>())
+    private var notificationCenterWatcher: AccessibilityWatcher?
     private var isTracking = false
 
     public init() {
@@ -71,6 +72,8 @@ public final class WindowTracker {
             manager.watch(pid: app.processIdentifier)
         }
 
+        startNotificationCenterWatcher()
+
         Task { [weak self] in
             await self?.performFullScan()
         }
@@ -84,6 +87,8 @@ public final class WindowTracker {
         subscriptions.removeAll()
         watcherManager?.unwatchAll()
         watcherManager = nil
+        notificationCenterWatcher?.stopWatching()
+        notificationCenterWatcher = nil
 
         let tasks = debouncedTasks.withLockUnchecked { tasks -> [String: Task<Void, Never>] in
             let snapshot = tasks
@@ -438,6 +443,34 @@ public final class WindowTracker {
                 await operation()
             }
         }
+    }
+
+    // MARK: - Notification Center Banner Watcher
+
+    private func startNotificationCenterWatcher() {
+        guard let ncApp = NSWorkspace.shared.runningApplications
+            .first(where: { $0.bundleIdentifier == "com.apple.notificationcenterui" }),
+              let watcher = AccessibilityWatcher(pid: ncApp.processIdentifier) else {
+            Logger.debug("NotificationCenter UI not found or not watchable")
+            return
+        }
+
+        notificationCenterWatcher = watcher
+        Logger.debug("Watching NotificationCenter UI", details: "pid=\(ncApp.processIdentifier)")
+
+        watcher.events
+            .sink { [weak self] event in
+                guard let self else { return }
+                switch event {
+                case .windowCreated, .windowDestroyed:
+                    debounce(key: "notification-banner") {
+                        self.eventSubject.send(.notificationBannerChanged)
+                    }
+                default:
+                    break
+                }
+            }
+            .store(in: &subscriptions)
     }
 
     private func emitChanges(_ changes: ChangeReport) {
