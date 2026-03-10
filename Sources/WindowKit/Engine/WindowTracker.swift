@@ -107,10 +107,11 @@ public final class WindowTracker {
         if repository.ignoredPIDs.contains(pid) { return [] }
         let appName = app.localizedName ?? "Unknown"
 
-        guard app.activationPolicy == .regular else {
+        let policy = app.activationPolicy
+        guard policy == .regular else {
             let cached = repository.readCache(forPID: pid)
             if !cached.isEmpty {
-                Logger.debug("App no longer .regular, purging", details: "pid=\(pid), name=\(appName)")
+                Logger.debug("App no longer .regular, purging", details: "pid=\(pid), name=\(appName), policy=\(policy.rawValue)")
                 repository.removeAll(forPID: pid)
                 for window in cached {
                     eventSubject.send(.windowDisappeared(window.id))
@@ -119,7 +120,7 @@ public final class WindowTracker {
             return []
         }
 
-        Logger.debug("Tracking application", details: "pid=\(pid), name=\(appName)")
+        Logger.debug("Tracking application", details: "pid=\(pid), name=\(appName), policy=\(policy.rawValue)")
 
         let discoveredWindows = await discovery.discoverAll(for: app)
 
@@ -221,7 +222,18 @@ public final class WindowTracker {
                 await self?.refreshApplication(app)
             }
 
-        case .windowDestroyed:
+        case .windowDestroyed(let element):
+            let elementWindowID = try? element.windowID()
+            let elementValid = enumerator.isValidElement(element)
+            Logger.debug("windowDestroyed raw event", details: "pid=\(pid), elementWindowID=\(elementWindowID.map(String.init) ?? "nil"), elementStillValid=\(elementValid)")
+
+            let cachedBefore = repository.readCache(forPID: pid)
+            Logger.debug("Cache before destroy handling", details: "pid=\(pid), count=\(cachedBefore.count), ids=\(cachedBefore.map(\.id))")
+
+            if let app = NSRunningApplication(processIdentifier: pid) {
+                Logger.debug("App state at destroy time", details: "pid=\(pid), name=\(app.localizedName ?? "?"), policy=\(app.activationPolicy.rawValue), terminated=\(app.isTerminated), hidden=\(app.isHidden)")
+            }
+
             pendingDestroyPIDs.withLockUnchecked { _ = $0.insert(pid) }
             debounce(key: "window-destroyed") { [weak self] in
                 guard let self else { return }
@@ -232,7 +244,7 @@ public final class WindowTracker {
                 }
                 for pid in pids {
                     guard let app = NSRunningApplication(processIdentifier: pid) else { continue }
-                    Logger.debug("Window destroyed notification, validating all windows", details: "pid=\(pid)")
+                    Logger.debug("Window destroyed debounced handler", details: "pid=\(pid), policy=\(app.activationPolicy.rawValue), terminated=\(app.isTerminated)")
                     if app.isTerminated || app.activationPolicy != .regular {
                         Logger.debug("App terminated or no longer .regular during destroy, purging all", details: "pid=\(pid)")
                         let windows = repository.readCache(forPID: pid)
@@ -241,9 +253,14 @@ public final class WindowTracker {
                             eventSubject.send(.windowDisappeared(window.id))
                         }
                     } else {
-                        let before = Set(repository.readCache(forPID: pid).map(\.id))
-                        let remaining = Set(repository.purify(forPID: pid, validator: enumerator.isValidElement).map(\.id))
-                        for removedID in before.subtracting(remaining) {
+                        let before = repository.readCache(forPID: pid)
+                        Logger.debug("Purify starting", details: "pid=\(pid), cached=\(before.map { "id=\($0.id) title=\($0.title ?? "nil")" })")
+                        let remaining = repository.purify(forPID: pid, validator: enumerator.isValidElement)
+                        let beforeIDs = Set(before.map(\.id))
+                        let remainingIDs = Set(remaining.map(\.id))
+                        let removedIDs = beforeIDs.subtracting(remainingIDs)
+                        Logger.debug("Purify result", details: "pid=\(pid), before=\(beforeIDs), remaining=\(remainingIDs), removed=\(removedIDs)")
+                        for removedID in removedIDs {
                             eventSubject.send(.windowDisappeared(removedID))
                         }
                     }
