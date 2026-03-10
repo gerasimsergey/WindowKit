@@ -17,6 +17,10 @@ public final class WindowRepository: @unchecked Sendable {
 
     public var ignoredPIDs: Set<pid_t> = []
 
+    /// Window IDs explicitly closed by the user via close(). These are suppressed
+    /// from future discovery until the app creates new windows.
+    private var suppressedWindowIDs: [pid_t: Set<CGWindowID>] = [:]
+
     public init() {}
 
     public func trackedApplications() -> [NSRunningApplication] {
@@ -81,10 +85,11 @@ public final class WindowRepository: @unchecked Sendable {
         cacheLock.lock()
         defer { cacheLock.unlock() }
 
+        let suppressed = suppressedWindowIDs[pid] ?? []
         let oldWindows = entries[pid] ?? []
         var merged = oldWindows
 
-        for window in windows {
+        for window in windows where !suppressed.contains(window.id) {
             var windowToInsert = window
 
             if windowToInsert.cachedPreview == nil,
@@ -135,6 +140,28 @@ public final class WindowRepository: @unchecked Sendable {
         removeEntryInternal(pid: pid, windowID: windowID)
     }
 
+    public func suppress(windowID: CGWindowID, forPID pid: pid_t) {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        suppressedWindowIDs[pid, default: []].insert(windowID)
+        removeEntryInternal(pid: pid, windowID: windowID)
+        Logger.debug("Suppressed window", details: "pid=\(pid), windowID=\(windowID)")
+    }
+
+    public func clearSuppressions(forPID pid: pid_t) {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        if suppressedWindowIDs.removeValue(forKey: pid) != nil {
+            Logger.debug("Cleared suppressions", details: "pid=\(pid)")
+        }
+    }
+
+    public func isSuppressed(windowID: CGWindowID, forPID pid: pid_t) -> Bool {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        return suppressedWindowIDs[pid]?.contains(windowID) == true
+    }
+
     public func registerPID(_ pid: pid_t) {
         cacheLock.lock()
         defer { cacheLock.unlock() }
@@ -147,6 +174,7 @@ public final class WindowRepository: @unchecked Sendable {
         cacheLock.lock()
         defer { cacheLock.unlock() }
         entries.removeValue(forKey: pid)
+        suppressedWindowIDs.removeValue(forKey: pid)
     }
 
     public func clear() {

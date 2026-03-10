@@ -238,6 +238,10 @@ public final class WindowKit {
         tracker.repository.readCache(windowID: id)
     }
 
+    public func closeWindow(_ window: CapturedWindow) throws {
+        try tracker.closeWindow(window)
+    }
+
     public func refresh(application: NSRunningApplication) async {
         await tracker.refreshApplication(application)
     }

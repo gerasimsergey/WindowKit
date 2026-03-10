@@ -54,12 +54,22 @@ struct WindowDiscovery {
 
     @available(macOS 12.3, *)
     private func isValidSCKWindow(_ window: SCWindow) -> Bool {
-        guard window.isOnScreen,
-              window.windowLayer == 0,
-              window.frame.size.width >= Self.minimumWindowSize.width,
-              window.frame.size.height >= Self.minimumWindowSize.height else {
+        let onScreen = window.isOnScreen
+        let layer = window.windowLayer
+        let frame = window.frame
+        let title = window.title
+        let appName = window.owningApplication?.applicationName
+        let pid = window.owningApplication?.processID
+
+        guard onScreen,
+              layer == 0,
+              frame.size.width >= Self.minimumWindowSize.width,
+              frame.size.height >= Self.minimumWindowSize.height else {
+            Logger.debug("SCK window rejected", details: "id=\(window.windowID), app=\(appName ?? "?"), pid=\(pid.map(String.init) ?? "?"), title=\(title ?? "nil"), onScreen=\(onScreen), layer=\(layer), frame=\(frame)")
             return false
         }
+
+        Logger.debug("SCK window accepted", details: "id=\(window.windowID), app=\(appName ?? "?"), pid=\(pid.map(String.init) ?? "?"), title=\(title ?? "nil"), onScreen=\(onScreen), layer=\(layer), frame=\(frame)")
         return true
     }
 
@@ -75,6 +85,9 @@ struct WindowDiscovery {
 
         let closeButton = try? axWindow.closeButton()
         let minimizeButton = try? axWindow.minimizeButton()
+        let role = try? axWindow.role()
+        let subrole = try? axWindow.subrole()
+        Logger.debug("SCK→AX match details", details: "id=\(scWindow.windowID), role=\(role ?? "nil"), subrole=\(subrole ?? "nil"), closeBtn=\(closeButton != nil), minBtn=\(minimizeButton != nil)")
         guard closeButton != nil || minimizeButton != nil else {
             return nil
         }
@@ -166,16 +179,30 @@ struct WindowDiscovery {
         var usedIDs = excludeIDs
 
         for axWindow in axWindows {
-            guard enumerator.meetsDiscoveryCriteria(axWindow) else { continue }
+            let axTitle = try? axWindow.title()
+            let axRole = try? axWindow.role()
+            let axSubrole = try? axWindow.subrole()
+            let axSize = try? axWindow.size()
+            let axPos = try? axWindow.position()
 
-            guard let windowID = enumerator.resolveWindowID(axWindow, candidates: cgCandidates, excludedIDs: usedIDs) else {
+            guard enumerator.meetsDiscoveryCriteria(axWindow) else {
+                Logger.debug("AX window failed meetsDiscoveryCriteria", details: "pid=\(pid), title=\(axTitle ?? "nil"), role=\(axRole ?? "nil"), subrole=\(axSubrole ?? "nil"), size=\(axSize.map(String.init(describing:)) ?? "nil"), pos=\(axPos.map(String.init(describing:)) ?? "nil")")
                 continue
             }
 
-            guard !excludeIDs.contains(windowID) else { continue }
+            guard let windowID = enumerator.resolveWindowID(axWindow, candidates: cgCandidates, excludedIDs: usedIDs) else {
+                Logger.debug("AX window failed resolveWindowID", details: "pid=\(pid), title=\(axTitle ?? "nil")")
+                continue
+            }
+
+            guard !excludeIDs.contains(windowID) else {
+                Logger.debug("AX window excluded (already in SCK)", details: "pid=\(pid), id=\(windowID), title=\(axTitle ?? "nil")")
+                continue
+            }
 
             guard let descriptor = cgCandidates.first(where: { $0.windowID == windowID }),
                   enumerator.meetsDiscoveryCriteria(windowID: windowID, descriptor: descriptor) else {
+                Logger.debug("AX window failed CG criteria", details: "pid=\(pid), id=\(windowID), title=\(axTitle ?? "nil")")
                 continue
             }
 
@@ -190,6 +217,7 @@ struct WindowDiscovery {
                 continue
             }
 
+            Logger.debug("AX window accepted", details: "pid=\(pid), id=\(windowID), title=\(axTitle ?? "nil"), bounds=\(descriptor.bounds), onScreen=\(descriptor.isOnScreen), alpha=\(descriptor.alpha)")
             usedIDs.insert(windowID)
             candidateWindows.append((axWindow, windowID, descriptor))
         }

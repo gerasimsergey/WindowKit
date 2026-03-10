@@ -155,6 +155,13 @@ public final class WindowTracker {
         _ = await trackApplication(app)
     }
 
+    /// Close a window and suppress it from future discovery.
+    public func closeWindow(_ window: CapturedWindow) throws {
+        try window.close()
+        repository.suppress(windowID: window.id, forPID: window.ownerPID)
+        eventSubject.send(.windowDisappeared(window.id))
+    }
+
     public func capturePreview(for windowID: CGWindowID) async -> CGImage? {
         let screenshotService = discovery.screenshotService
         do {
@@ -218,6 +225,7 @@ public final class WindowTracker {
 
         switch event {
         case .windowCreated:
+            repository.clearSuppressions(forPID: pid)
             debounce(key: "refresh-\(pid)") { [weak self] in
                 await self?.refreshApplication(app)
             }
