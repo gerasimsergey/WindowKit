@@ -106,6 +106,19 @@ public final class WindowTracker {
         let pid = app.processIdentifier
         if repository.ignoredPIDs.contains(pid) { return [] }
         let appName = app.localizedName ?? "Unknown"
+
+        guard app.activationPolicy == .regular else {
+            let cached = repository.readCache(forPID: pid)
+            if !cached.isEmpty {
+                Logger.debug("App no longer .regular, purging", details: "pid=\(pid), name=\(appName)")
+                repository.removeAll(forPID: pid)
+                for window in cached {
+                    eventSubject.send(.windowDisappeared(window.id))
+                }
+            }
+            return []
+        }
+
         Logger.debug("Tracking application", details: "pid=\(pid), name=\(appName)")
 
         let discoveredWindows = await discovery.discoverAll(for: app)
@@ -220,8 +233,8 @@ public final class WindowTracker {
                 for pid in pids {
                     guard let app = NSRunningApplication(processIdentifier: pid) else { continue }
                     Logger.debug("Window destroyed notification, validating all windows", details: "pid=\(pid)")
-                    if app.isTerminated {
-                        Logger.debug("Application terminated during window destroy, purging all", details: "pid=\(pid)")
+                    if app.isTerminated || app.activationPolicy != .regular {
+                        Logger.debug("App terminated or no longer .regular during destroy, purging all", details: "pid=\(pid)")
                         let windows = repository.readCache(forPID: pid)
                         repository.removeAll(forPID: pid)
                         for window in windows {
