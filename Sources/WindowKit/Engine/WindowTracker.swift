@@ -28,6 +28,7 @@ public final class WindowTracker {
 
     private let debouncedTasks = OSAllocatedUnfairLock(initialState: [String: Task<Void, Never>]())
     private let pendingDestroyPIDs = OSAllocatedUnfairLock(initialState: Set<pid_t>())
+    private let axQueue = DispatchQueue(label: "com.windowkit.ax", qos: .userInitiated)
     private var notificationCenterWatcher: AccessibilityWatcher?
     private var isTracking = false
 
@@ -231,9 +232,12 @@ public final class WindowTracker {
             }
 
         case .windowDestroyed(let element):
-            let elementWindowID = try? element.windowID()
-            let elementValid = enumerator.isValidElement(element)
-            Logger.debug("windowDestroyed raw event", details: "pid=\(pid), elementWindowID=\(elementWindowID.map(String.init) ?? "nil"), elementStillValid=\(elementValid)")
+            let enumerator = self.enumerator
+            axQueue.async {
+                let elementWindowID = try? element.windowID()
+                let elementValid = enumerator.isValidElement(element)
+                Logger.debug("windowDestroyed raw event", details: "pid=\(pid), elementWindowID=\(elementWindowID.map(String.init) ?? "nil"), elementStillValid=\(elementValid)")
+            }
 
             let cachedBefore = repository.readCache(forPID: pid)
             Logger.debug("Cache before destroy handling", details: "pid=\(pid), count=\(cachedBefore.count), ids=\(cachedBefore.map(\.id))")
@@ -263,7 +267,12 @@ public final class WindowTracker {
                     } else {
                         let before = repository.readCache(forPID: pid)
                         Logger.debug("Purify starting", details: "pid=\(pid), cached=\(before.map { "id=\($0.id) title=\($0.title ?? "nil")" })")
-                        let remaining = repository.purify(forPID: pid, validator: enumerator.isValidElement)
+                        let remaining = await withCheckedContinuation { continuation in
+                            self.axQueue.async {
+                                let result = self.repository.purify(forPID: pid, validator: self.enumerator.isValidElement)
+                                continuation.resume(returning: result)
+                            }
+                        }
                         let beforeIDs = Set(before.map(\.id))
                         let remainingIDs = Set(remaining.map(\.id))
                         let removedIDs = beforeIDs.subtracting(remainingIDs)
@@ -391,27 +400,27 @@ public final class WindowTracker {
             updateWindowTimestamp(element: element, pid: pid)
 
         case .titleChanged(let element):
-            if let role = try? element.role(), role == kAXWindowRole as String {
-                if let newTitle = try? element.title() {
-                    updateWindowState(element: element, pid: pid) { window in
-                        CapturedWindow(
-                            id: window.id,
-                            title: newTitle,
-                            ownerBundleID: window.ownerBundleID,
-                            ownerPID: window.ownerPID,
-                            bounds: window.bounds,
-                            isMinimized: window.isMinimized,
-                            isFullscreen: window.isFullscreen,
-                            isOwnerHidden: window.isOwnerHidden,
-                            isVisible: window.isVisible,
-                            owningDisplayID: window.owningDisplayID,
-                            desktopSpace: window.desktopSpace,
-                            lastInteractionTime: window.lastInteractionTime,
-                            creationTime: window.creationTime,
-                            axElement: window.axElement,
-                            appAxElement: window.appAxElement
-                        )
-                    }
+            axQueue.async { [weak self] in
+                guard let role = try? element.role(), role == kAXWindowRole as String,
+                      let newTitle = try? element.title() else { return }
+                self?.updateWindowState(element: element, pid: pid) { window in
+                    CapturedWindow(
+                        id: window.id,
+                        title: newTitle,
+                        ownerBundleID: window.ownerBundleID,
+                        ownerPID: window.ownerPID,
+                        bounds: window.bounds,
+                        isMinimized: window.isMinimized,
+                        isFullscreen: window.isFullscreen,
+                        isOwnerHidden: window.isOwnerHidden,
+                        isVisible: window.isVisible,
+                        owningDisplayID: window.owningDisplayID,
+                        desktopSpace: window.desktopSpace,
+                        lastInteractionTime: window.lastInteractionTime,
+                        creationTime: window.creationTime,
+                        axElement: window.axElement,
+                        appAxElement: window.appAxElement
+                    )
                 }
             }
 
@@ -443,30 +452,33 @@ public final class WindowTracker {
     }
 
     private func updateWindowTimestamp(element: AXUIElement, pid: pid_t) {
-        repository.modify(forPID: pid) { windows in
-            if let windowID = try? element.windowID(),
-               let existing = windows.first(where: { $0.id == windowID }) {
-                windows.remove(existing)
-                var updated = CapturedWindow(
-                    id: existing.id,
-                    title: existing.title,
-                    ownerBundleID: existing.ownerBundleID,
-                    ownerPID: existing.ownerPID,
-                    bounds: existing.bounds,
-                    isMinimized: existing.isMinimized,
-                    isFullscreen: existing.isFullscreen,
-                    isOwnerHidden: existing.isOwnerHidden,
-                    isVisible: existing.isVisible,
-                    owningDisplayID: existing.owningDisplayID,
-                    desktopSpace: existing.desktopSpace,
-                    lastInteractionTime: Date(),
-                    creationTime: existing.creationTime,
-                    axElement: existing.axElement,
-                    appAxElement: existing.appAxElement
-                )
-                updated.cachedPreview = existing.cachedPreview
-                updated.previewTimestamp = existing.previewTimestamp
-                windows.insert(updated)
+        axQueue.async { [weak self] in
+            let windowID = try? element.windowID()
+            guard let self, let windowID else { return }
+            self.repository.modify(forPID: pid) { windows in
+                if let existing = windows.first(where: { $0.id == windowID }) {
+                    windows.remove(existing)
+                    var updated = CapturedWindow(
+                        id: existing.id,
+                        title: existing.title,
+                        ownerBundleID: existing.ownerBundleID,
+                        ownerPID: existing.ownerPID,
+                        bounds: existing.bounds,
+                        isMinimized: existing.isMinimized,
+                        isFullscreen: existing.isFullscreen,
+                        isOwnerHidden: existing.isOwnerHidden,
+                        isVisible: existing.isVisible,
+                        owningDisplayID: existing.owningDisplayID,
+                        desktopSpace: existing.desktopSpace,
+                        lastInteractionTime: Date(),
+                        creationTime: existing.creationTime,
+                        axElement: existing.axElement,
+                        appAxElement: existing.appAxElement
+                    )
+                    updated.cachedPreview = existing.cachedPreview
+                    updated.previewTimestamp = existing.previewTimestamp
+                    windows.insert(updated)
+                }
             }
         }
     }
