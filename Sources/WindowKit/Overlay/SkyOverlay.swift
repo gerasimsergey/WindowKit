@@ -43,6 +43,7 @@ public final class OverlayManager {
     private var pinnedScreen: NSScreen?
     private var pinnedAnchor: OverlayAnchor = .center
     private var visibility: OverlayVisibility = .always
+    private var lastWindowFrame: NSRect?
     private var cancellable: AnyCancellable?
 
     private init() {
@@ -80,6 +81,7 @@ public final class OverlayManager {
         dismissWindow()
         pinnedContent = nil
         pinnedScreen = nil
+        lastWindowFrame = nil
         isEnabled = false
     }
 
@@ -112,15 +114,28 @@ public final class OverlayManager {
             width: max(fittingSize.width, 1),
             height: max(fittingSize.height, 1)
         )
-        let windowRect = resolveFrame(
-            anchor: pinnedAnchor,
-            contentSize: contentSize,
-            screen: screen
-        )
+
+        let windowRect: NSRect
+        if let saved = lastWindowFrame {
+            // Restore the user's dragged position, keep the saved size
+            windowRect = saved
+        } else {
+            windowRect = resolveFrame(
+                anchor: pinnedAnchor,
+                contentSize: contentSize,
+                screen: screen
+            )
+        }
 
         let window = TopmostWindow(contentRect: windowRect)
         hostingView.frame = NSRect(origin: .zero, size: windowRect.size)
         window.contentView = hostingView
+
+        if visibility == .lockScreenOnly {
+            window.isMovable = false
+            window.isMovableByWindowBackground = false
+        }
+
         window.orderFrontRegardless()
 
         SkyLightSpaceOperator.shared.addWindow(CGWindowID(window.windowNumber))
@@ -131,6 +146,9 @@ public final class OverlayManager {
     }
 
     private func dismissWindow() {
+        if let window = overlayWindow {
+            lastWindowFrame = window.frame
+        }
         overlayWindow?.orderOut(nil)
         overlayWindow = nil
         isShowing = false
