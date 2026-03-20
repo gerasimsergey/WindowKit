@@ -20,7 +20,7 @@ final class TopmostWindow: NSWindow {
         isMovable = false
         level = NSWindow.Level(rawValue: Int(Int32.max) - 2)
         canBecomeVisibleWithoutLogin = true
-        ignoresMouseEvents = true
+        ignoresMouseEvents = false
 
         collectionBehavior = [
             .fullScreenAuxiliary,
