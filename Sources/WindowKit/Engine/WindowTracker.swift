@@ -32,6 +32,8 @@ public final class WindowTracker {
     private var notificationCenterWatcher: AccessibilityWatcher?
     private var isTracking = false
     private var wakeObserver: NSObjectProtocol?
+    private var wakeCooldownUntil: ContinuousClock.Instant?
+    private static let wakeCooldownDuration: Duration = .seconds(2)
 
     public init() {
         let repository = WindowRepository()
@@ -224,8 +226,26 @@ public final class WindowTracker {
         }
     }
 
+    private var isInWakeCooldown: Bool {
+        if let wakeCooldownUntil, ContinuousClock.now < wakeCooldownUntil {
+            return true
+        }
+        return false
+    }
+
     private func handleAccessibilityEvent(_ event: AccessibilityEvent, forPID pid: pid_t) async {
         guard let app = NSRunningApplication(processIdentifier: pid) else { return }
+
+        // During wake cooldown, suppress refresh-heavy events — the post-cooldown full scan covers them.
+        if isInWakeCooldown {
+            switch event {
+            case .windowCreated, .windowResized, .windowMoved, .applicationRevealed:
+                Logger.debug("Suppressing AX event during wake cooldown", details: "pid=\(pid), event=\(event)")
+                return
+            default:
+                break
+            }
+        }
 
         switch event {
         case .windowCreated:
@@ -494,11 +514,28 @@ public final class WindowTracker {
             forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
         ) { [weak self] _ in
             guard let self, self.isTracking else { return }
-            Logger.info("System wake detected, resetting AX observers")
+            Logger.info("System wake detected, starting recovery cooldown")
+
+            // 1. Arm cooldown — suppresses redundant AX-driven refreshes while we recover.
+            self.wakeCooldownUntil = ContinuousClock.now + Self.wakeCooldownDuration
+
+            // 2. Cancel all in-flight debounced work from before sleep.
+            self.debouncedTasks.withLockUnchecked { tasks in
+                for (_, task) in tasks { task.cancel() }
+                tasks.removeAll()
+            }
+
+            // 3. Reset AX observers so they pick up the post-wake state.
             self.watcherManager?.resetAll()
             self.notificationCenterWatcher?.reset()
+
+            // 4. Delay the full scan until after cooldown so the system stabilises first.
             Task { [weak self] in
-                await self?.performFullScan()
+                try? await Task.sleep(for: Self.wakeCooldownDuration)
+                guard let self, self.isTracking else { return }
+                self.wakeCooldownUntil = nil
+                Logger.info("Wake cooldown ended, performing full scan")
+                await self.performFullScan()
             }
         }
     }
