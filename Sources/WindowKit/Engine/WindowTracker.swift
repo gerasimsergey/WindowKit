@@ -33,7 +33,12 @@ public final class WindowTracker {
     private var isTracking = false
     private var wakeObserver: NSObjectProtocol?
     private var wakeCooldownUntil: ContinuousClock.Instant?
-    private static let wakeCooldownDuration: Duration = .seconds(2)
+    private var wakeRecoveryTask: Task<Void, Never>?
+
+    // Wake recovery backoff parameters
+    private static let wakeInitialDelay: Duration = .seconds(1)
+    private static let wakeMaxDelay: Duration = .seconds(15)
+    private static let wakeBackoffMultiplier: Double = 2.0
 
     public init() {
         let repository = WindowRepository()
@@ -45,10 +50,15 @@ public final class WindowTracker {
         )
     }
 
+    /// AX messaging timeout — lower than the 6s default to fail fast on hung apps.
+    public static let axMessagingTimeout: Float = 2.0
+
     public func startTracking() {
         guard !isTracking else { return }
         isTracking = true
         Logger.info("Starting window tracking")
+
+        AXUIElement.systemWide().setMessagingTimeout(seconds: Self.axMessagingTimeout)
 
         processWatcher.events
             .sink { [weak self] event in
@@ -88,6 +98,10 @@ public final class WindowTracker {
         guard isTracking else { return }
         isTracking = false
         Logger.info("Stopping window tracking")
+
+        wakeRecoveryTask?.cancel()
+        wakeRecoveryTask = nil
+        wakeCooldownUntil = nil
 
         subscriptions.removeAll()
         watcherManager?.unwatchAll()
@@ -161,7 +175,7 @@ public final class WindowTracker {
         _ = await trackApplication(app)
     }
 
-    /// Close a window and suppress it from future discovery.
+    /// Closes the window and suppresses it from future discovery.
     public func closeWindow(_ window: CapturedWindow) throws {
         try window.close()
         repository.suppress(windowID: window.id, forPID: window.ownerPID)
@@ -236,7 +250,7 @@ public final class WindowTracker {
     private func handleAccessibilityEvent(_ event: AccessibilityEvent, forPID pid: pid_t) async {
         guard let app = NSRunningApplication(processIdentifier: pid) else { return }
 
-        // During wake cooldown, suppress refresh-heavy events — the post-cooldown full scan covers them.
+        // Post-cooldown full scan covers these; suppress to avoid redundant refreshes.
         if isInWakeCooldown {
             switch event {
             case .windowCreated, .windowResized, .windowMoved, .applicationRevealed:
@@ -267,16 +281,13 @@ public final class WindowTracker {
                     guard let app = NSRunningApplication(processIdentifier: pid) else { continue }
                     Logger.debug("Window destroyed debounced handler", details: "pid=\(pid), policy=\(app.activationPolicy.rawValue), terminated=\(app.isTerminated), hidden=\(app.isHidden)")
 
-                    // App is hidden — AXUIElementDestroyed is a side-effect of the
-                    // hide transition, not a real window close. Skip entirely.
+                    // AXUIElementDestroyed during hide is a side-effect, not a real close.
                     if app.isHidden {
                         Logger.debug("Skipping destroy — app is hidden", details: "pid=\(pid)")
                         continue
                     }
 
-                    // If all cached windows are minimized, ignore the destroy.
-                    // macOS cannot close a minimized window natively; only our own
-                    // closeWindow() (which uses suppress, not purify) can do that.
+                    // macOS can't close minimized windows; only our closeWindow() (via suppress) can.
                     let cached = repository.readCache(forPID: pid)
                     if !cached.isEmpty, cached.allSatisfy(\.isMinimized) {
                         Logger.debug("Skipping destroy — all windows minimized", details: "pid=\(pid), count=\(cached.count)")
@@ -531,28 +542,54 @@ public final class WindowTracker {
             forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
         ) { [weak self] _ in
             guard let self, self.isTracking else { return }
-            Logger.info("System wake detected, starting recovery cooldown")
+            Logger.info("System wake detected, starting canary-gated recovery")
 
-            // 1. Arm cooldown — suppresses redundant AX-driven refreshes while we recover.
-            self.wakeCooldownUntil = ContinuousClock.now + Self.wakeCooldownDuration
+            self.wakeRecoveryTask?.cancel()
+            self.wakeCooldownUntil = ContinuousClock.now + Self.wakeMaxDelay
 
-            // 2. Cancel all in-flight debounced work from before sleep.
             self.debouncedTasks.withLockUnchecked { tasks in
                 for (_, task) in tasks { task.cancel() }
                 tasks.removeAll()
             }
 
-            // 3. Reset AX observers so they pick up the post-wake state.
             self.watcherManager?.resetAll()
             self.notificationCenterWatcher?.reset()
 
-            // 4. Delay the full scan until after cooldown so the system stabilises first.
-            Task { [weak self] in
-                try? await Task.sleep(for: Self.wakeCooldownDuration)
-                guard let self, self.isTracking else { return }
+            self.wakeRecoveryTask = Task { [weak self] in
+                guard let self else { return }
+
+                var delay = Self.wakeInitialDelay
+                var totalWaited: Duration = .zero
+
+                while !Task.isCancelled && self.isTracking {
+                    try? await Task.sleep(for: delay)
+                    guard !Task.isCancelled, self.isTracking else { return }
+
+                    totalWaited += delay
+
+                    if isAccessibilityReady() {
+                        Logger.info("AX canary passed after \(totalWaited), performing full scan")
+                        break
+                    }
+
+                    Logger.debug("AX canary failed after \(totalWaited), backing off", details: "nextDelay=\(delay * Self.wakeBackoffMultiplier)")
+
+                    if totalWaited >= Self.wakeMaxDelay {
+                        Logger.warning("AX canary never passed within \(Self.wakeMaxDelay), scanning anyway")
+                        break
+                    }
+
+                    let nextDelay = delay * Self.wakeBackoffMultiplier
+                    let remaining = Self.wakeMaxDelay - totalWaited
+                    delay = min(nextDelay, remaining)
+                }
+
+                guard !Task.isCancelled, self.isTracking else { return }
                 self.wakeCooldownUntil = nil
-                Logger.info("Wake cooldown ended, performing full scan")
                 await self.performFullScan()
+
+                self.watcherManager?.resetAll()
+                self.notificationCenterWatcher?.reset()
             }
         }
     }

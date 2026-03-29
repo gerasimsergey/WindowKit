@@ -94,6 +94,7 @@ final class WindowKitTests: XCTestCase {
             ownerPID: pid,
             bounds: CGRect(x: 0, y: 0, width: 800, height: 600),
             isMinimized: false,
+            isFullscreen: false,
             isOwnerHidden: false,
             isVisible: true,
             desktopSpace: 1,

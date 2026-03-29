@@ -10,10 +10,7 @@ public final class AppWindowState {
     private let repository: WindowRepository
     private let badgeStore: DockBadgeStore
 
-    // Only tracked stored property — bumped to trigger re-evaluation
     private var version: UInt = 0
-
-    // -- Window access (read-through to repository) --
 
     public var windows: [CapturedWindow] {
         _ = version
@@ -31,8 +28,6 @@ public final class AppWindowState {
         _ = version
         return !repository.readCache(forPID: pid).isEmpty
     }
-
-    // -- Convenience state --
 
     public var allMinimized: Bool {
         _ = version
@@ -56,8 +51,6 @@ public final class AppWindowState {
         }.count
     }
 
-    // -- Dock badge --
-
     public var badgeLabel: String? {
         _ = version
         return badgeStore.badge(forPID: pid)
@@ -74,7 +67,7 @@ public final class AppWindowState {
         return Int(label)
     }
 
-    /// Animation applied when state changes. Set to `nil` to disable.
+    /// Set to `nil` to disable state-change animation.
     @ObservationIgnored public var animation: Animation? = .default
 
     init(pid: pid_t, repository: WindowRepository, badgeStore: DockBadgeStore) {
@@ -102,8 +95,7 @@ public final class WindowKit {
         set { Logger.enabled = newValue }
     }
 
-    /// Custom log handler. When set, logs are forwarded here instead of default output.
-    /// Parameters: (level: String, message: String, details: String?)
+    /// Custom log handler — replaces default output. Parameters: (level, message, details).
     public var logHandler: ((String, String, String?) -> Void)? {
         get { nil }
         set {
@@ -290,7 +282,7 @@ public final class WindowKit {
         tracker.stopTracking()
     }
 
-    /// Starts a 1-second polling timer that continuously reads dock badge state for all tracked apps.
+    /// Starts a 1-second polling timer for dock badge state.
     public func startBadgePolling() {
         stopBadgePolling()
         badgePollTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
@@ -311,11 +303,34 @@ public final class WindowKit {
         guard badgePollTimer != nil else { return }
         stopBadgePolling()
         badgeStore.invalidateCache()
+
+        // Wait for AX canary to pass before resuming badge polling.
         let work = DispatchWorkItem { [weak self] in
-            self?.startBadgePolling()
+            guard let self else { return }
+            Task.detached(priority: .utility) {
+                var delay: TimeInterval = 1.0
+                var totalWaited: TimeInterval = 0
+                let maxWait: TimeInterval = 15.0
+
+                while totalWaited < maxWait {
+                    try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                    totalWaited += delay
+
+                    if isAccessibilityReady() {
+                        Logger.info("Badge polling: AX canary passed after \(String(format: "%.1f", totalWaited))s")
+                        break
+                    }
+
+                    delay = min(delay * 2, maxWait - totalWaited)
+                }
+
+                await MainActor.run { [weak self] in
+                    self?.startBadgePolling()
+                }
+            }
         }
         wakeCooldownWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0, execute: work)
+        DispatchQueue.main.async(execute: work)
     }
 
     // MARK: - Per-App Observable State
@@ -379,7 +394,7 @@ public final class WindowKit {
         }
     }
 
-    /// Unconditionally refreshes all badges and invalidates all states (for event-driven triggers).
+    /// Refreshes all badges and invalidates all states unconditionally.
     private func refreshAllBadgesAndInvalidate() {
         let trackedPIDs = trackedApplications.map(\.processIdentifier)
         let statePIDs = Array(appStates.keys)

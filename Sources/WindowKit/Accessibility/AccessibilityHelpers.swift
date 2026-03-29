@@ -130,10 +130,44 @@ extension AXUIElement {
     public static func systemWide() -> AXUIElement {
         AXUIElementCreateSystemWide()
     }
+
+    /// Override AX messaging timeout (default ~6s) to fail fast on unresponsive apps.
+    @discardableResult
+    public func setMessagingTimeout(seconds: Float) -> Bool {
+        AXUIElementSetMessagingTimeout(self, seconds) == .success
+    }
+}
+
+// MARK: - AX Readiness Probe
+
+/// Probes Finder's AX tree to detect post-wake AX subsystem degradation.
+public func isAccessibilityReady() -> Bool {
+    guard let finder = NSWorkspace.shared.runningApplications
+        .first(where: { $0.bundleIdentifier == "com.apple.finder" }) else {
+        return false
+    }
+
+    let app = AXUIElementCreateApplication(finder.processIdentifier)
+
+    app.setMessagingTimeout(seconds: 1.0)
+
+    guard let role = try? app.role(), role == kAXApplicationRole as String else {
+        return false
+    }
+
+    guard let windows = try? app.windows(), !windows.isEmpty else {
+        return false
+    }
+
+    // Reject partial-init state where app element is returned as its own child
+    return windows.contains { element in
+        guard let childRole = try? element.role() else { return false }
+        return childRole == kAXWindowRole as String
+    }
 }
 
 extension AXUIElement {
-    /// Standard AX enumeration plus brute-force fallback for windows AX misses
+    /// AX enumeration with brute-force fallback for windows AX misses.
     public static func allWindows(forPID pid: pid_t) -> [AXUIElement] {
         var resultSet = Set<AXUIElement>()
 
