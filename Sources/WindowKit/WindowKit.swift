@@ -125,6 +125,8 @@ public final class WindowKit {
 
     public var processEvents: AnyPublisher<ProcessEvent, Never> { tracker.processEvents }
 
+    public var isShowingDesktop: Bool { tracker.isShowingDesktop }
+
     public private(set) var frontmostApplication: NSRunningApplication?
     public private(set) var trackedApplications: [NSRunningApplication] = []
     public private(set) var launchingApplications: [NSRunningApplication] = []
