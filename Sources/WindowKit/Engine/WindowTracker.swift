@@ -25,7 +25,6 @@ public final class WindowTracker {
 
     public var processEvents: AnyPublisher<ProcessEvent, Never> { processWatcher.events }
     public var frontmostApplication: NSRunningApplication? { processWatcher.frontmostApplication }
-    public var isShowingDesktop: Bool { processWatcher.isShowingDesktop }
 
     private let debouncedTasks = OSAllocatedUnfairLock(initialState: [String: Task<Void, Never>]())
     private let pendingDestroyPIDs = OSAllocatedUnfairLock(initialState: Set<pid_t>())
@@ -238,9 +237,6 @@ public final class WindowTracker {
             debounce(key: "space-change") { [weak self] in
                 await self?.performFullScan()
             }
-
-        case .showDesktopEntered, .showDesktopExited:
-            break
         }
     }
 
